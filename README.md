@@ -280,6 +280,44 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 - Settings isolation and explicit control
 - New programmatic subagents and session forking features
 
+## Contributors
+
+A big thank you to all the amazing contributors who made this project possible! Here they are with some well-deserved recognition (and gentle teasing):
+
+### 🏆 Hall of Fame
+
+- **Ashwin Bhat** (19 commits) - The commit champion! Ashwin has made more commits than a politician makes promises. We're pretty sure they have a direct line to the Git gods at this point.
+
+- **Dickson Tsai** (9 commits) - The steady contributor who proves that consistency beats intensity. Like a reliable cup of coffee, Dickson's commits keep the project caffeinated and running smoothly.
+
+### 🤖 The Bot Brigade
+
+- **github-actions[bot]** (6 commits) - Our tireless robot overlord who never sleeps, never complains, and never asks for a raise. The perfect employee, really. We suspect they're plotting to automate us all out of jobs.
+
+### 🔧 The Core Crew
+
+- **Michael Gendy** (3 commits) - Three commits of pure quality over quantity. Michael believes in the "measure twice, cut once" philosophy, except it's "think twice, commit thrice."
+
+- **kashyap murali** (2 commits) - Two commits but twice the impact! Kashyap proves that good things come in small packages, like expensive chocolates and life-changing PRs.
+
+- **Dan Siwiec** (2 commits) - Dan's contributions are like a good sequel - not as many as the original, but still pretty darn good.
+
+### 🌟 The One-Hit Wonders
+
+Our fantastic contributors who made their mark with singular, spectacular contributions:
+
+- **wenxiang** - One commit, maximum impact. The coding equivalent of a mic drop.
+- **blois** - Short and sweet, just like their username.
+- **Victor Mota** - Victor by name, victor by nature.
+- **Suzanne Wang** - Suzanne-ing us all with quality code.
+- **Rushil Patel** - Rushed in and made their mark!
+- **KuaaMU** - We're not sure how to pronounce it, but we love the mystery.
+- **Anudeep Yegireddi** - Deep thoughts, deeper code.
+- **Abhijeeth Padarthi** - Proving that great code speaks louder than frequent commits.
+- **8519mark** - Numbers don't lie, and neither does good code!
+
+*P.S. If you're reading this and thinking "I should contribute too," you're absolutely right! We'd love to add more jokes... er, we mean recognition to this list.* 😉
+
 ## License
 
 MIT
