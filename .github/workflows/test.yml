@@ -62,7 +62,7 @@ jobs:
       - name: Install Claude Code (Windows)
         if: runner.os == 'Windows'
         run: |
-          irm https://claude.ai/install.ps1 | iex
+          & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) 2.0.10
           $claudePath = "$env:USERPROFILE\.local\bin"
           echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
@@ -105,7 +105,7 @@ jobs:
       - name: Install Claude Code (Windows)
         if: runner.os == 'Windows'
         run: |
-          irm https://claude.ai/install.ps1 | iex
+          & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) 2.0.10
           $claudePath = "$env:USERPROFILE\.local\bin"
           echo "$claudePath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
