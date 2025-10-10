@@ -195,8 +195,9 @@ async def test_server_creation():
 
 def test_sdk_server_requires_streaming_mode():
     """Test that SDK MCP servers with string prompts raise helpful error."""
-    from claude_agent_sdk import query
     import anyio
+
+    from claude_agent_sdk import query
 
     async def _test():
         # Create an SDK server
