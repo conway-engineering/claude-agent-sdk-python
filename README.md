@@ -280,6 +280,12 @@ If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the 
 - Settings isolation and explicit control
 - New programmatic subagents and session forking features
 
+## Contributors
+
+Why don't our contributors ever get lost? Because they always know where to `git checkout`! 🎯
+
+Thanks to all the amazing developers who have contributed to this project. You're the real MVPs - Most Valuable Programmers!
+
 ## License
 
 MIT
