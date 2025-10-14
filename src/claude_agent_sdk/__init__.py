@@ -270,7 +270,20 @@ def create_sdk_mcp_server(
             # Call the tool's handler with arguments
             result = await tool_def.handler(arguments)
 
-            # Convert result to MCP format
+            # Check if the tool result indicates an error
+            # If so, we need to raise an exception so the MCP decorator
+            # can properly set isError=True in the CallToolResult
+            if result.get("is_error", False):
+                # Extract error message from content if available
+                error_message = "Tool execution failed"
+                if "content" in result and result["content"]:
+                    for item in result["content"]:
+                        if item.get("type") == "text" and item.get("text"):
+                            error_message = item["text"]
+                            break
+                raise RuntimeError(error_message)
+
+            # Convert result to MCP format for successful execution
             # The decorator expects us to return the content, not a CallToolResult
             # It will wrap our return value in CallToolResult
             content = []

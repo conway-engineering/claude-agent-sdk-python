@@ -146,6 +146,65 @@ async def test_error_handling():
 
 
 @pytest.mark.asyncio
+async def test_is_error_field_handling():
+    """Test that tools can return is_error field and it's properly handled."""
+
+    @tool("error_tool", "Returns error via is_error field", {})
+    async def error_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "Tool error message"}],
+            "is_error": True,
+        }
+
+    @tool("success_tool", "Returns success with is_error=False", {})
+    async def success_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "Tool success message"}],
+            "is_error": False,
+        }
+
+    @tool("normal_tool", "Returns without is_error field", {})
+    async def normal_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"content": [{"type": "text", "text": "Normal response"}]}
+
+    server_config = create_sdk_mcp_server(
+        name="error-field-test", tools=[error_tool, success_tool, normal_tool]
+    )
+
+    server = server_config["instance"]
+    from mcp.types import CallToolRequest, CallToolRequestParams
+
+    call_handler = server.request_handlers[CallToolRequest]
+
+    # Test error_tool - should have isError=True
+    error_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="error_tool", arguments={}),
+    )
+    error_result = await call_handler(error_request)
+    assert error_result.root.isError is True
+    assert "Tool error message" in error_result.root.content[0].text
+
+    # Test success_tool - should have isError=False
+    success_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="success_tool", arguments={}),
+    )
+    success_result = await call_handler(success_request)
+    assert success_result.root.isError is False
+    assert "Tool success message" in success_result.root.content[0].text
+
+    # Test normal_tool - should have isError=False (default)
+    normal_request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="normal_tool", arguments={}),
+    )
+    normal_result = await call_handler(normal_request)
+    assert normal_result.root.isError is False
+    assert "Normal response" in normal_result.root.content[0].text
+
+
+@pytest.mark.asyncio
 async def test_mixed_servers():
     """Test that SDK and external MCP servers can work together."""
 
