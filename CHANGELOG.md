@@ -4,7 +4,8 @@
 
 ### Features
 
-- **Skip version check**: Added `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` environment variable to allow users to disable the Claude Code version check. Set this environment variable to skip the minimum version validation when the SDK connects to Claude Code
+- **Skip version check**: Added `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK` environment variable to allow users to disable the Claude Code version check. Set this environment variable to skip the minimum version validation when the SDK connects to Claude Code. (Only recommend if you already have Claude Code 2.0.0 or higher installed, otherwise some functionality may break)
+- SDK MCP server tool calls can now return image content blocks
 
 ## 0.1.3
 
