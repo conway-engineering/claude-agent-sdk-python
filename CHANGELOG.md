@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.11
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.57
+
+## 0.1.10
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.53
+
+## 0.1.9
+
+### Internal/Other Changes
+
+- Updated bundled Claude CLI to version 2.0.49
+
+## 0.1.8
+
+### Features
+
+- Claude Code is now included by default in the package, removing the requirement to install it separately. If you do wish to use a separately installed build, use the `cli_path` field in `Options`.
+
+## 0.1.7
+
+### Features
+
+- **Structured outputs support**: Agents can now return validated JSON matching your schema. See https://docs.claude.com/en/docs/agent-sdk/structured-outputs. (#340)
+- **Fallback model handling**: Added automatic fallback model handling for improved reliability and parity with the TypeScript SDK. When the primary model is unavailable, the SDK will automatically use a fallback model (#317)
+- **Local Claude CLI support**: Added support for using a locally installed Claude CLI from `~/.claude/local/claude`, enabling development and testing with custom Claude CLI builds (#302)
+
 ## 0.1.6
 
 ### Features

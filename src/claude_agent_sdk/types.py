@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 # Permission modes
 PermissionMode = Literal["default", "acceptEdits", "plan", "bypassPermissions"]
 
+# SDK Beta features - see https://docs.anthropic.com/en/api/beta-headers
+SdkBeta = Literal["context-1m-2025-08-07"]
+
 # Agent definitions
 SettingSource = Literal["user", "project", "local"]
 
@@ -24,6 +27,13 @@ class SystemPromptPreset(TypedDict):
     type: Literal["preset"]
     preset: Literal["claude_code"]
     append: NotRequired[str]
+
+
+class ToolsPreset(TypedDict):
+    """Tools preset configuration."""
+
+    type: Literal["preset"]
+    preset: Literal["claude_code"]
 
 
 @dataclass
@@ -366,6 +376,9 @@ class HookMatcher:
     # A list of Python functions with function signature HookCallback
     hooks: list[HookCallback] = field(default_factory=list)
 
+    # Timeout in seconds for all hooks in this matcher (default: 60)
+    timeout: float | None = None
+
 
 # MCP Server config
 class McpStdioServerConfig(TypedDict):
@@ -416,6 +429,83 @@ class SdkPluginConfig(TypedDict):
     path: str
 
 
+# Sandbox configuration types
+class SandboxNetworkConfig(TypedDict, total=False):
+    """Network configuration for sandbox.
+
+    Attributes:
+        allowUnixSockets: Unix socket paths accessible in sandbox (e.g., SSH agents).
+        allowAllUnixSockets: Allow all Unix sockets (less secure).
+        allowLocalBinding: Allow binding to localhost ports (macOS only).
+        httpProxyPort: HTTP proxy port if bringing your own proxy.
+        socksProxyPort: SOCKS5 proxy port if bringing your own proxy.
+    """
+
+    allowUnixSockets: list[str]
+    allowAllUnixSockets: bool
+    allowLocalBinding: bool
+    httpProxyPort: int
+    socksProxyPort: int
+
+
+class SandboxIgnoreViolations(TypedDict, total=False):
+    """Violations to ignore in sandbox.
+
+    Attributes:
+        file: File paths for which violations should be ignored.
+        network: Network hosts for which violations should be ignored.
+    """
+
+    file: list[str]
+    network: list[str]
+
+
+class SandboxSettings(TypedDict, total=False):
+    """Sandbox settings configuration.
+
+    This controls how Claude Code sandboxes bash commands for filesystem
+    and network isolation.
+
+    **Important:** Filesystem and network restrictions are configured via permission
+    rules, not via these sandbox settings:
+    - Filesystem read restrictions: Use Read deny rules
+    - Filesystem write restrictions: Use Edit allow/deny rules
+    - Network restrictions: Use WebFetch allow/deny rules
+
+    Attributes:
+        enabled: Enable bash sandboxing (macOS/Linux only). Default: False
+        autoAllowBashIfSandboxed: Auto-approve bash commands when sandboxed. Default: True
+        excludedCommands: Commands that should run outside the sandbox (e.g., ["git", "docker"])
+        allowUnsandboxedCommands: Allow commands to bypass sandbox via dangerouslyDisableSandbox.
+            When False, all commands must run sandboxed (or be in excludedCommands). Default: True
+        network: Network configuration for sandbox.
+        ignoreViolations: Violations to ignore.
+        enableWeakerNestedSandbox: Enable weaker sandbox for unprivileged Docker environments
+            (Linux only). Reduces security. Default: False
+
+    Example:
+        ```python
+        sandbox_settings: SandboxSettings = {
+            "enabled": True,
+            "autoAllowBashIfSandboxed": True,
+            "excludedCommands": ["docker"],
+            "network": {
+                "allowUnixSockets": ["/var/run/docker.sock"],
+                "allowLocalBinding": True
+            }
+        }
+        ```
+    """
+
+    enabled: bool
+    autoAllowBashIfSandboxed: bool
+    excludedCommands: list[str]
+    allowUnsandboxedCommands: bool
+    network: SandboxNetworkConfig
+    ignoreViolations: SandboxIgnoreViolations
+    enableWeakerNestedSandbox: bool
+
+
 # Content block types
 @dataclass
 class TextBlock:
@@ -454,6 +544,16 @@ ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
 
 
 # Message types
+AssistantMessageError = Literal[
+    "authentication_failed",
+    "billing_error",
+    "rate_limit",
+    "invalid_request",
+    "server_error",
+    "unknown",
+]
+
+
 @dataclass
 class UserMessage:
     """User message."""
@@ -469,6 +569,7 @@ class AssistantMessage:
     content: list[ContentBlock]
     model: str
     parent_tool_use_id: str | None = None
+    error: AssistantMessageError | None = None
 
 
 @dataclass
@@ -492,6 +593,7 @@ class ResultMessage:
     total_cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     result: str | None = None
+    structured_output: Any = None
 
 
 @dataclass
@@ -511,6 +613,7 @@ Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | Strea
 class ClaudeAgentOptions:
     """Query options for Claude SDK."""
 
+    tools: list[str] | ToolsPreset | None = None
     allowed_tools: list[str] = field(default_factory=list)
     system_prompt: str | SystemPromptPreset | None = None
     mcp_servers: dict[str, McpServerConfig] | str | Path = field(default_factory=dict)
@@ -522,6 +625,8 @@ class ClaudeAgentOptions:
     disallowed_tools: list[str] = field(default_factory=list)
     model: str | None = None
     fallback_model: str | None = None
+    # Beta features - see https://docs.anthropic.com/en/api/beta-headers
+    betas: list[SdkBeta] = field(default_factory=list)
     permission_prompt_tool_name: str | None = None
     cwd: str | Path | None = None
     cli_path: str | Path | None = None
@@ -554,10 +659,17 @@ class ClaudeAgentOptions:
     agents: dict[str, AgentDefinition] | None = None
     # Setting sources to load (user, project, local)
     setting_sources: list[SettingSource] | None = None
+    # Sandbox configuration for bash command isolation.
+    # Filesystem and network restrictions are derived from permission rules (Read/Edit/WebFetch),
+    # not from these sandbox settings.
+    sandbox: SandboxSettings | None = None
     # Plugin configurations for custom plugins
     plugins: list[SdkPluginConfig] = field(default_factory=list)
     # Max tokens for thinking blocks
     max_thinking_tokens: int | None = None
+    # Output format for structured outputs (matches Messages API structure)
+    # Example: {"type": "json_schema", "schema": {"type": "object", "properties": {...}}}
+    output_format: dict[str, Any] | None = None
 
 
 # SDK Control Protocol

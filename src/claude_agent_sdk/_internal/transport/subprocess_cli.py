@@ -68,6 +68,12 @@ class SubprocessCLITransport(Transport):
 
     def _find_cli(self) -> str:
         """Find Claude Code CLI binary."""
+        # First, check for bundled CLI
+        bundled_cli = self._find_bundled_cli()
+        if bundled_cli:
+            return bundled_cli
+
+        # Fall back to system-wide search
         if cli := shutil.which("claude"):
             return cli
 
@@ -93,6 +99,75 @@ class SubprocessCLITransport(Transport):
             "  ClaudeAgentOptions(cli_path='/path/to/claude')"
         )
 
+    def _find_bundled_cli(self) -> str | None:
+        """Find bundled CLI binary if it exists."""
+        # Determine the CLI binary name based on platform
+        cli_name = "claude.exe" if platform.system() == "Windows" else "claude"
+
+        # Get the path to the bundled CLI
+        # The _bundled directory is in the same package as this module
+        bundled_path = Path(__file__).parent.parent.parent / "_bundled" / cli_name
+
+        if bundled_path.exists() and bundled_path.is_file():
+            logger.info(f"Using bundled Claude Code CLI: {bundled_path}")
+            return str(bundled_path)
+
+        return None
+
+    def _build_settings_value(self) -> str | None:
+        """Build settings value, merging sandbox settings if provided.
+
+        Returns the settings value as either:
+        - A JSON string (if sandbox is provided or settings is JSON)
+        - A file path (if only settings path is provided without sandbox)
+        - None if neither settings nor sandbox is provided
+        """
+        has_settings = self._options.settings is not None
+        has_sandbox = self._options.sandbox is not None
+
+        if not has_settings and not has_sandbox:
+            return None
+
+        # If only settings path and no sandbox, pass through as-is
+        if has_settings and not has_sandbox:
+            return self._options.settings
+
+        # If we have sandbox settings, we need to merge into a JSON object
+        settings_obj: dict[str, Any] = {}
+
+        if has_settings:
+            assert self._options.settings is not None
+            settings_str = self._options.settings.strip()
+            # Check if settings is a JSON string or a file path
+            if settings_str.startswith("{") and settings_str.endswith("}"):
+                # Parse JSON string
+                try:
+                    settings_obj = json.loads(settings_str)
+                except json.JSONDecodeError:
+                    # If parsing fails, treat as file path
+                    logger.warning(
+                        f"Failed to parse settings as JSON, treating as file path: {settings_str}"
+                    )
+                    # Read the file
+                    settings_path = Path(settings_str)
+                    if settings_path.exists():
+                        with settings_path.open(encoding="utf-8") as f:
+                            settings_obj = json.load(f)
+            else:
+                # It's a file path - read and parse
+                settings_path = Path(settings_str)
+                if settings_path.exists():
+                    with settings_path.open(encoding="utf-8") as f:
+                        settings_obj = json.load(f)
+                else:
+                    logger.warning(f"Settings file not found: {settings_path}")
+
+        # Merge sandbox settings
+        if has_sandbox:
+            settings_obj["sandbox"] = self._options.sandbox
+
+        return json.dumps(settings_obj)
+
     def _build_command(self) -> list[str]:
         """Build CLI command with arguments."""
         cmd = [self._cli_path, "--output-format", "stream-json", "--verbose"]
@@ -109,6 +184,18 @@ class SubprocessCLITransport(Transport):
                 cmd.extend(
                     ["--append-system-prompt", self._options.system_prompt["append"]]
                 )
+
+        # Handle tools option (base set of tools)
+        if self._options.tools is not None:
+            tools = self._options.tools
+            if isinstance(tools, list):
+                if len(tools) == 0:
+                    cmd.extend(["--tools", ""])
+                else:
+                    cmd.extend(["--tools", ",".join(tools)])
+            else:
+                # Preset object - 'claude_code' preset maps to 'default'
+                cmd.extend(["--tools", "default"])
 
         if self._options.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(self._options.allowed_tools)])
@@ -128,6 +215,9 @@ class SubprocessCLITransport(Transport):
         if self._options.fallback_model:
             cmd.extend(["--fallback-model", self._options.fallback_model])
 
+        if self._options.betas:
+            cmd.extend(["--betas", ",".join(self._options.betas)])
+
         if self._options.permission_prompt_tool_name:
             cmd.extend(
                 ["--permission-prompt-tool", self._options.permission_prompt_tool_name]
@@ -142,8 +232,10 @@ class SubprocessCLITransport(Transport):
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
 
-        if self._options.settings:
-            cmd.extend(["--settings", self._options.settings])
+        # Handle settings and sandbox: merge sandbox into settings if both are provided
+        settings_value = self._build_settings_value()
+        if settings_value:
+            cmd.extend(["--settings", settings_value])
 
         if self._options.add_dirs:
             # Convert all paths to strings and add each directory
@@ -215,18 +307,30 @@ class SubprocessCLITransport(Transport):
                 # Flag with value
                 cmd.extend([f"--{flag}", str(value)])
 
+        if self._options.max_thinking_tokens is not None:
+            cmd.extend(
+                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
+            )
+
+        # Extract schema from output_format structure if provided
+        # Expected: {"type": "json_schema", "schema": {...}}
+        if (
+            self._options.output_format is not None
+            and isinstance(self._options.output_format, dict)
+            and self._options.output_format.get("type") == "json_schema"
+        ):
+            schema = self._options.output_format.get("schema")
+            if schema is not None:
+                cmd.extend(["--json-schema", json.dumps(schema)])
+
         # Add prompt handling based on mode
+        # IMPORTANT: This must come AFTER all flags because everything after "--" is treated as arguments
         if self._is_streaming:
             # Streaming mode: use --input-format stream-json
             cmd.extend(["--input-format", "stream-json"])
         else:
             # String mode: use --print with the prompt
             cmd.extend(["--print", "--", str(self._prompt)])
-
-        if self._options.max_thinking_tokens is not None:
-            cmd.extend(
-                ["--max-thinking-tokens", str(self._options.max_thinking_tokens)]
-            )
 
         # Check if command line is too long (Windows limitation)
         cmd_str = " ".join(cmd)

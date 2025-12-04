@@ -500,3 +500,196 @@ class TestSubprocessCLITransport:
                 assert user_passed == "claude"
 
         anyio.run(_test)
+
+    def test_build_command_with_sandbox_only(self):
+        """Test building CLI command with sandbox settings (no existing settings)."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "autoAllowBashIfSandboxed": True,
+            "network": {
+                "allowLocalBinding": True,
+                "allowUnixSockets": ["/var/run/docker.sock"],
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+
+        # Should have --settings with sandbox merged in
+        assert "--settings" in cmd
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        # Parse and verify
+        parsed = json.loads(settings_value)
+        assert "sandbox" in parsed
+        assert parsed["sandbox"]["enabled"] is True
+        assert parsed["sandbox"]["autoAllowBashIfSandboxed"] is True
+        assert parsed["sandbox"]["network"]["allowLocalBinding"] is True
+        assert parsed["sandbox"]["network"]["allowUnixSockets"] == [
+            "/var/run/docker.sock"
+        ]
+
+    def test_build_command_with_sandbox_and_settings_json(self):
+        """Test building CLI command with sandbox merged into existing settings JSON."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        # Existing settings as JSON string
+        existing_settings = (
+            '{"permissions": {"allow": ["Bash(ls:*)"]}, "verbose": true}'
+        )
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "excludedCommands": ["git", "docker"],
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings=existing_settings, sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+
+        # Should have merged settings
+        assert "--settings" in cmd
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+
+        # Original settings should be preserved
+        assert parsed["permissions"] == {"allow": ["Bash(ls:*)"]}
+        assert parsed["verbose"] is True
+
+        # Sandbox should be merged in
+        assert "sandbox" in parsed
+        assert parsed["sandbox"]["enabled"] is True
+        assert parsed["sandbox"]["excludedCommands"] == ["git", "docker"]
+
+    def test_build_command_with_settings_file_and_no_sandbox(self):
+        """Test that settings file path is passed through when no sandbox."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(settings="/path/to/settings.json"),
+        )
+
+        cmd = transport._build_command()
+
+        # Should pass path directly, not parse it
+        assert "--settings" in cmd
+        settings_idx = cmd.index("--settings")
+        assert cmd[settings_idx + 1] == "/path/to/settings.json"
+
+    def test_build_command_sandbox_minimal(self):
+        """Test sandbox with minimal configuration."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {"enabled": True}
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+
+        assert "--settings" in cmd
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        assert parsed == {"sandbox": {"enabled": True}}
+
+    def test_sandbox_network_config(self):
+        """Test sandbox with full network configuration."""
+        import json
+
+        from claude_agent_sdk import SandboxSettings
+
+        sandbox: SandboxSettings = {
+            "enabled": True,
+            "network": {
+                "allowUnixSockets": ["/tmp/ssh-agent.sock"],
+                "allowAllUnixSockets": False,
+                "allowLocalBinding": True,
+                "httpProxyPort": 8080,
+                "socksProxyPort": 8081,
+            },
+        }
+
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(sandbox=sandbox),
+        )
+
+        cmd = transport._build_command()
+        settings_idx = cmd.index("--settings")
+        settings_value = cmd[settings_idx + 1]
+
+        parsed = json.loads(settings_value)
+        network = parsed["sandbox"]["network"]
+
+        assert network["allowUnixSockets"] == ["/tmp/ssh-agent.sock"]
+        assert network["allowAllUnixSockets"] is False
+        assert network["allowLocalBinding"] is True
+        assert network["httpProxyPort"] == 8080
+        assert network["socksProxyPort"] == 8081
+
+    def test_build_command_with_tools_array(self):
+        """Test building CLI command with tools as array of tool names."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=["Read", "Edit", "Bash"]),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "Read,Edit,Bash"
+
+    def test_build_command_with_tools_empty_array(self):
+        """Test building CLI command with tools as empty array (disables all tools)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools=[]),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == ""
+
+    def test_build_command_with_tools_preset(self):
+        """Test building CLI command with tools preset."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(tools={"type": "preset", "preset": "claude_code"}),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" in cmd
+        tools_idx = cmd.index("--tools")
+        assert cmd[tools_idx + 1] == "default"
+
+    def test_build_command_without_tools(self):
+        """Test building CLI command without tools option (default None)."""
+        transport = SubprocessCLITransport(
+            prompt="test",
+            options=make_options(),
+        )
+
+        cmd = transport._build_command()
+        assert "--tools" not in cmd
