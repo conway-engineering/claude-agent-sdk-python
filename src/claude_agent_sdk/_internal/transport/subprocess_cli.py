@@ -6,7 +6,6 @@ import os
 import platform
 import re
 import shutil
-import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -548,6 +547,15 @@ class SubprocessCLITransport(Transport):
                     if not json_line:
                         continue
 
+                    # Skip non-JSON lines (e.g. [SandboxDebug]) when not
+                    # mid-parse — they corrupt the buffer otherwise (#347).
+                    if not json_buffer and not json_line.startswith("{"):
+                        logger.debug(
+                            "Skipping non-JSON line from CLI stdout: %s",
+                            json_line[:200],
+                        )
+                        continue
+
                     # Keep accumulating partial JSON until we can parse it
                     json_buffer += json_line
 
@@ -616,13 +624,14 @@ class SubprocessCLITransport(Transport):
                         ]
 
                         if version_parts < min_parts:
-                            warning = (
-                                f"Warning: Claude Code version {version} is unsupported in the Agent SDK. "
-                                f"Minimum required version is {MINIMUM_CLAUDE_CODE_VERSION}. "
-                                "Some features may not work correctly."
+                            logger.warning(
+                                "Claude Code version %s at %s is unsupported in the Agent SDK. "
+                                "Minimum required version is %s. "
+                                "Some features may not work correctly.",
+                                version,
+                                self._cli_path,
+                                MINIMUM_CLAUDE_CODE_VERSION,
                             )
-                            logger.warning(warning)
-                            print(warning, file=sys.stderr)
         except Exception:
             pass
         finally:
