@@ -15,7 +15,7 @@ from mcp.types import (
     ListToolsRequest,
 )
 
-from .._errors import ProcessError
+from .._errors import ProcessError, ResultError, _normalize_result_errors
 from ..types import (
     TERMINAL_TASK_STATUSES,
     PermissionMode,
@@ -54,6 +54,34 @@ logger = logging.getLogger(__name__)
 # Anything added here must be a type that reliably reaches a terminal status,
 # or it will hang the query (see Query._track_task_lifecycle).
 DEFERRING_TASK_TYPES = frozenset({"local_agent", "local_workflow"})
+
+
+def _error_result_text(message: dict[str, Any]) -> str:
+    """Pick the most informative text from a ``result`` frame with ``is_error``.
+
+    Terminal errors the CLI raises itself (``error_max_turns``,
+    ``error_during_execution``, ...) carry their prose in ``errors[]``. A run
+    that ends on an API failure instead arrives as ``subtype: "success"`` with
+    ``is_error: true``, an empty ``errors[]`` and the "API Error: ..." prose in
+    ``result`` — falling back to the subtype there produced the self-
+    contradictory "Claude Code returned an error result: success". Prefer
+    ``errors[]``, then ``result``, then a non-success ``subtype``, then the
+    HTTP status, mirroring the TypeScript SDK's choice of ``result`` for the
+    ``success`` subtype.
+    """
+    errors = _normalize_result_errors(message.get("errors"))
+    if errors:
+        return "; ".join(errors)
+    result = message.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    subtype = message.get("subtype")
+    if isinstance(subtype, str) and subtype and subtype != "success":
+        return subtype
+    status = message.get("api_error_status")
+    if status is not None:
+        return f"API error (HTTP {status})"
+    return "unknown error"
 
 
 def _convert_hook_output_for_cli(hook_output: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +129,7 @@ class Query:
         agents: dict[str, dict[str, Any]] | None = None,
         exclude_dynamic_sections: bool | None = None,
         skills: list[str] | Literal["all"] | None = None,
+        forward_subagent_text: bool = False,
     ):
         """Initialize Query with transport and callbacks.
 
@@ -116,6 +145,8 @@ class Query:
                 initialize (see ``SystemPromptPreset``)
             skills: Optional skill allowlist to send via initialize so the CLI
                 can filter which skills are loaded into the system prompt
+            forward_subagent_text: Ask the CLI (via initialize) to forward
+                subagent text/thinking blocks, not just tool_use/tool_result
         """
         self._initialize_timeout = initialize_timeout
         self.transport = transport
@@ -126,6 +157,7 @@ class Query:
         self._agents = agents
         self._exclude_dynamic_sections = exclude_dynamic_sections
         self._skills = skills
+        self._forward_subagent_text = forward_subagent_text
 
         # Control protocol state
         self.pending_control_responses: dict[str, anyio.Event] = {}
@@ -156,11 +188,12 @@ class Query:
         # a result that arrives while this set is non-empty must not close
         # stdin.
         self._inflight_tasks: set[str] = set()
-        # Set to the result's error text when the most recent message is a
-        # result with is_error=True. Used to replace the generic "exit code 1"
-        # ProcessError with the structured error the CLI already reported.
-        # Mirrors the TypeScript SDK's `lastErrorResultText` (Query.ts).
-        self._last_error_result_text: str | None = None
+        # Set to the result payload when the most recent message is a result
+        # with is_error=True. Used to replace the generic "exit code 1"
+        # ProcessError with a ResultError carrying what the CLI already
+        # reported. Mirrors the TypeScript SDK's `lastErrorResultText`
+        # (Query.ts), but keeps the whole payload rather than just the text.
+        self._last_error_result: dict[str, Any] | None = None
 
         # SessionStore mirroring (set via set_transcript_mirror_batcher)
         self._transcript_mirror_batcher: TranscriptMirrorBatcher | None = None
@@ -238,6 +271,8 @@ class Query:
         # only send the field when it's an explicit list.
         if isinstance(self._skills, list):
             request["skills"] = self._skills
+        if self._forward_subagent_text:
+            request["forwardSubagentText"] = True
 
         # Use longer timeout for initialize since MCP servers may take time to start
         response = await self._send_control_request(
@@ -347,12 +382,9 @@ class Query:
                     else:
                         self._first_result_event.set()
                     if message.get("is_error"):
-                        errors = message.get("errors") or []
-                        self._last_error_result_text = "; ".join(errors) or str(
-                            message.get("subtype", "unknown error")
-                        )
+                        self._last_error_result = message
                     else:
-                        self._last_error_result_text = None
+                        self._last_error_result = None
                 elif not (
                     msg_type == "system"
                     and message.get("subtype") == "session_state_changed"
@@ -361,7 +393,7 @@ class Query:
                     # marker means the conversation moved on; a ProcessError
                     # now is a fresh crash, not the expected exit from a prior
                     # error result. Mirrors the TypeScript SDK's reset logic.
-                    self._last_error_result_text = None
+                    self._last_error_result = None
 
                 # Regular SDK messages go to the stream
                 await self._message_send.send(message)
@@ -372,22 +404,26 @@ class Query:
             raise  # Re-raise to properly handle cancellation
         except Exception as e:
             # When the CLI emits a result with is_error=True (e.g.
-            # error_max_turns, error_during_execution) it then exits non-zero
-            # on purpose, for shell-script consumers. The trailing ProcessError
-            # carries no information beyond "exit code 1" — replace it with the
-            # structured error the CLI already reported so the exception is
-            # actionable. Mirrors the TypeScript SDK (Query.ts readMessages).
-            pending_error = e
-            if isinstance(e, ProcessError) and self._last_error_result_text is not None:
+            # error_max_turns, error_during_execution, or an API failure) it
+            # then exits non-zero on purpose, for shell-script consumers. The
+            # trailing ProcessError carries no information beyond "exit code
+            # 1" — replace it with a ResultError carrying what the CLI already
+            # reported so the exception is actionable and typed. Mirrors the
+            # TypeScript SDK (Query.ts readMessages).
+            pending_error: Exception = e
+            if isinstance(e, ProcessError) and self._last_error_result is not None:
                 error_text = (
                     f"Claude Code returned an error result: "
-                    f"{self._last_error_result_text}"
+                    f"{_error_result_text(self._last_error_result)}"
                 )
                 # stderr deliberately not carried over: the transport's value is
                 # a generic placeholder, and the result text is the real cause.
-                pending_error = ProcessError(error_text, exit_code=e.exit_code)
+                pending_error = ResultError(
+                    error_text, data=self._last_error_result, exit_code=e.exit_code
+                )
+                pending_error.__cause__ = e
                 logger.debug(
-                    "Replacing ProcessError (exit code %s) with result error text",
+                    "Replacing ProcessError (exit code %s) with ResultError",
                     e.exit_code,
                 )
             else:
@@ -401,8 +437,14 @@ class Query:
                 if request_id not in self.pending_control_results:
                     self.pending_control_results[request_id] = pending_error
                     event.set()
-            # Put error in stream so iterators can handle it
-            await self._message_send.send({"type": "error", "error": error_text})
+            # Put the error in the stream so iterators can raise it. The typed
+            # exception rides along so receive_messages() re-raises it as-is
+            # (ResultError / ProcessError with its exit code,
+            # CLIJSONDecodeError, ...) instead of flattening it to a bare
+            # Exception(str).
+            await self._message_send.send(
+                {"type": "error", "error": error_text, "exception": pending_error}
+            )
         finally:
             # Flush any remaining transcript mirror entries before closing so
             # an early stdout EOF or transport error doesn't drop entries
@@ -915,25 +957,45 @@ class Query:
             if status in TERMINAL_TASK_STATUSES:
                 self._inflight_tasks.discard(task_id)
 
-    async def wait_for_result_and_end_input(self) -> None:
-        """Wait for a run-ending result (if needed) then close stdin.
+    def _has_bidirectional_needs(self) -> bool:
+        """Whether the CLI may still send control requests that need a reply.
 
-        If SDK MCP servers or hooks require bidirectional communication,
-        keeps stdin open until a result arrives with no tasks in flight. A
-        result frame ends one turn, not necessarily the run: background tasks
-        keep running past it and still need stdin for hook/SDK-MCP control
-        responses (see #1088). The control protocol requires stdin to remain
-        open for the entire conversation, so no timeout is applied. The event
-        is guaranteed to fire: either when a result message arrives with no
-        in-flight tasks (every task completion wakes the parent for a
-        follow-up turn, which ends in such a result), or in _read_messages'
-        finally block if the process exits early.
+        SDK MCP servers, hooks, and the ``can_use_tool`` permission callback
+        are all served over the control protocol: the CLI writes a
+        ``control_request`` to stdout and blocks until the SDK writes the
+        matching ``control_response`` to stdin. Closing stdin while any of
+        these are configured makes every later request fail CLI-side with
+        "Stream closed". Mirrors the TypeScript SDK's ``hasBidirectionalNeeds``.
         """
-        if self.sdk_mcp_servers or self.hooks:
+        return bool(self.sdk_mcp_servers or self.hooks or self.can_use_tool)
+
+    async def wait_for_result_and_end_input(self) -> None:
+        """Wait for the closing result (if needed) then close stdin.
+
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback require
+        bidirectional communication, keeps stdin open until the first result
+        frame that arrives with no tasks in flight. A result frame ends one
+        turn, not necessarily the run: background tasks keep running past it
+        and still need stdin for control responses (see #1088). The control
+        protocol requires stdin to remain open for the entire conversation, so
+        no timeout is applied. The event is guaranteed to fire: either when a
+        result message arrives with no in-flight tasks (every task completion
+        wakes the parent for a follow-up turn, which ends in such a result),
+        or in _read_messages' finally block if the process exits early.
+
+        Known limitation: the event is one-shot and is not aware of prompt
+        messages still queued CLI-side, so an ``AsyncIterable`` prompt that
+        yields several user messages (several turns) releases the hold at the
+        first turn boundary with no tracked tasks; control requests from later
+        turns can then find stdin closed. Single-message and string prompts —
+        the common one-shot shapes — are fully covered.
+        """
+        if self._has_bidirectional_needs():
             logger.debug(
                 "Waiting for a run-ending result before closing stdin "
                 f"(sdk_mcp_servers={len(self.sdk_mcp_servers)}, "
-                f"has_hooks={bool(self.hooks)})"
+                f"has_hooks={bool(self.hooks)}, "
+                f"has_can_use_tool={self.can_use_tool is not None})"
             )
             await self._first_result_event.wait()
 
@@ -942,18 +1004,33 @@ class Query:
     async def stream_input(self, stream: AsyncIterable[dict[str, Any]]) -> None:
         """Stream input messages to transport.
 
-        If SDK MCP servers or hooks are present, waits for the first result
-        before closing stdin to allow bidirectional control protocol communication.
+        If SDK MCP servers, hooks, or a ``can_use_tool`` callback are present,
+        waits for a run-ending result before closing stdin to allow
+        bidirectional control protocol communication.
         """
+        written = 0
         try:
             async for message in stream:
                 if self._closed:
                     break
                 await self.transport.write(json.dumps(message) + "\n")
-
-            await self.wait_for_result_and_end_input()
+                written += 1
         except Exception as e:
-            logger.debug(f"Error streaming input: {e}")
+            # A user-supplied prompt iterable (or the write) failed. Don't
+            # leave stdin open — the CLI would wait for input forever and the
+            # consumer's `async for` would never finish — fall through and
+            # close it like a normal end of input.
+            logger.error("Prompt stream failed; closing stdin: %s", e)
+        try:
+            if written:
+                await self.wait_for_result_and_end_input()
+            else:
+                # Nothing was sent, so no result will arrive to release the
+                # hold; close immediately (mirrors the TypeScript SDK's
+                # messageCount guard).
+                await self.transport.end_input()
+        except Exception as e:
+            logger.debug(f"Error closing input stream: {e}")
 
     async def receive_messages(self) -> AsyncIterator[dict[str, Any]]:
         """Receive SDK messages (not control messages)."""
@@ -962,6 +1039,9 @@ class Query:
             if message.get("type") == "end":
                 break
             elif message.get("type") == "error":
+                exc = message.get("exception")
+                if isinstance(exc, Exception):
+                    raise exc
                 raise Exception(message.get("error", "Unknown error"))
 
             yield message
